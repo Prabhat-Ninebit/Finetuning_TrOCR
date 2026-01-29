@@ -184,8 +184,8 @@ training_args = Seq2SeqTrainingArguments(
 
     eval_strategy="steps",
     save_strategy="steps",
-    save_steps=500,
-    eval_steps=500,
+    save_steps=100,
+    eval_steps=100,
     save_total_limit=2,
 
     per_device_train_batch_size=BATCH_SIZE,

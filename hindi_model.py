@@ -114,7 +114,7 @@ def compute_metrics(pred):
 training_args = Seq2SeqTrainingArguments(
     output_dir=OUTPUT_DIR,
     predict_with_generate=True,       # Essential to get actual text for CER
-    evaluation_strategy="steps",
+    eval_strategy="steps",
     save_strategy="steps",
     eval_steps=500,
     save_steps=1000,

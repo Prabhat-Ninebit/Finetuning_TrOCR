@@ -47,35 +47,23 @@ val_ds = prepare_dataset("val.csv")
 img_processor = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 processor = TrOCRProcessor(image_processor=img_processor, tokenizer=tokenizer)
-
-# Load the model weights
 model = VisionEncoderDecoderModel.from_pretrained(MODEL_ID)
 
-# FIX for ValueError: Move generation params to generation_config
+# FORCE these into the config object explicitly
 model.config.decoder_start_token_id = processor.tokenizer.bos_token_id or processor.tokenizer.cls_token_id
 model.config.pad_token_id = processor.tokenizer.pad_token_id
 model.config.eos_token_id = processor.tokenizer.sep_token_id
 
+# IMPORTANT: Also sync the generation_config
 model.generation_config.decoder_start_token_id = model.config.decoder_start_token_id
 model.generation_config.pad_token_id = model.config.pad_token_id
-model.generation_config.eos_token_id = model.config.eos_token_id
-model.generation_config.max_length = MAX_LENGTH
-model.generation_config.num_beams = 4  # Better for Hindi characters
 
-model.to(DEVICE)
-
-# -----------------------------
-# 4. PREPROCESSING PIPELINE
-# -----------------------------
-# -----------------------------
-# 4. PREPROCESSING PIPELINE (INSTANT START)
-# -----------------------------
+# Fix for the DeprecationWarning you saw in the logs:
 def preprocess(batch):
-    # Image processing
     images = [Image.open(os.path.join(IMAGE_DIR, name)).convert("RGB") for name in batch["file_name"]]
-    pixel_values = processor(images, return_tensors="pt").pixel_values
+    # Use the processor to get tensors directly instead of manual np.array
+    inputs = processor(images, return_tensors="pt") 
     
-    # Text processing
     labels = processor.tokenizer(
         batch["text"], 
         padding="max_length", 
@@ -85,11 +73,11 @@ def preprocess(batch):
     
     labels = [[(l if l != processor.tokenizer.pad_token_id else -100) for l in label] for label in labels]
     
+    # Return as torch tensors directly to avoid the Numpy 2.0 copy error
     return {
-        "pixel_values": torch.tensor(np.array(pixel_values)), 
+        "pixel_values": inputs.pixel_values, 
         "labels": torch.tensor(labels)
     }
-
 # Use set_transform instead of map. This takes 0 seconds.
 train_ds.set_transform(preprocess)
 val_ds.set_transform(preprocess)

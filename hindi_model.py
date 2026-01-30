@@ -153,9 +153,9 @@ trainer = Seq2SeqTrainer(
     train_dataset=train_ds,
     eval_dataset=val_ds,
     data_collator=default_data_collator,
-    compute_metrics=compute_metrics,
-    tokenizer=processor
+    compute_metrics=compute_metrics
 )
+
 
 
 # ======================

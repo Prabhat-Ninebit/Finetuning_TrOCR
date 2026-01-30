@@ -77,7 +77,11 @@ def preprocess(batch):
         "labels": labels,
     }
 
-val_ds = val_ds.map(preprocess, remove_columns=val_ds.column_names)
+val_ds = val_ds.map(
+    preprocess,
+    remove_columns=["text"]   # keep file_name!
+)
+
 
 # -----------------------------
 # DATA COLLATOR

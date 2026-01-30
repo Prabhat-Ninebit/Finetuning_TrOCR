@@ -1,5 +1,9 @@
 from PIL import Image
 from transformers import AutoFeatureExtractor, AutoTokenizer, TrOCRProcessor, VisionEncoderDecoderModel
+from transformers import AutoImageProcessor
+
+# Use ImageProcessor instead of FeatureExtractor
+feature_extractor = AutoImageProcessor.from_pretrained('google/vit-base-patch16-224-in21k')
 
 # Load the model and processor
 encoder_model = 'google/vit-base-patch16-224-in21k'
@@ -7,7 +11,7 @@ decoder_model = 'surajp/RoBERTa-hindi-guj-san'
 trained_model_path = 'sabaridsnfuji/Hindi_Offline_Handwritten_OCR'
 
 # Initialize the processor and model
-feature_extractor = AutoFeatureExtractor.from_pretrained(encoder_model)
+# feature_extractor = AutoFeatureExtractor.from_pretrained(encoder_model)
 tokenizer = AutoTokenizer.from_pretrained(decoder_model)
 processor = TrOCRProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
 model = VisionEncoderDecoderModel.from_pretrained(trained_model_path)

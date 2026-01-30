@@ -67,12 +67,15 @@ model.to(DEVICE)
 # -----------------------------
 # 4. PREPROCESSING PIPELINE
 # -----------------------------
+# -----------------------------
+# 4. PREPROCESSING PIPELINE (INSTANT START)
+# -----------------------------
 def preprocess(batch):
     # Image processing
     images = [Image.open(os.path.join(IMAGE_DIR, name)).convert("RGB") for name in batch["file_name"]]
     pixel_values = processor(images, return_tensors="pt").pixel_values
     
-    # Text processing (Labels)
+    # Text processing
     labels = processor.tokenizer(
         batch["text"], 
         padding="max_length", 
@@ -80,14 +83,13 @@ def preprocess(batch):
         truncation=True
     ).input_ids
     
-    # Use -100 for padding tokens so they are ignored in loss calculation
     labels = [[(l if l != processor.tokenizer.pad_token_id else -100) for l in label] for label in labels]
     
     return {"pixel_values": pixel_values, "labels": labels}
 
-# Apply preprocessing to datasets
-train_ds = train_ds.map(preprocess, batched=True, remove_columns=train_ds.column_names)
-val_ds = val_ds.map(preprocess, batched=True, remove_columns=val_ds.column_names)
+# Use set_transform instead of map. This takes 0 seconds.
+train_ds.set_transform(preprocess)
+val_ds.set_transform(preprocess)
 
 # -----------------------------
 # 5. EVALUATION METRIC (CER)

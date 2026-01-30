@@ -62,21 +62,29 @@ val_ds   = load_csv(os.path.join(DATASET_DIR, "val.csv"))
 # MODEL & PROCESSOR
 # -----------------------------
 # Check if a checkpoint exists, if so, load from there. Otherwise, use base.
+# -----------------------------
+# MODEL & PROCESSOR
+# -----------------------------
+# 1. Always load processor from the base MODEL_NAME 
+# (unless you specifically saved a custom one)
+processor = TrOCRProcessor.from_pretrained(MODEL_NAME)
+
+# 2. Determine where to load the model weights from
 if os.path.isdir(OUTPUT_DIR) and get_last_checkpoint(OUTPUT_DIR):
     checkpoint_path = get_last_checkpoint(OUTPUT_DIR)
     print(f"✅ Loading fine-tuned weights from: {checkpoint_path}")
+    # Load weights from the checkpoint
     model = VisionEncoderDecoderModel.from_pretrained(checkpoint_path)
-    processor = TrOCRProcessor.from_pretrained(checkpoint_path) 
 else:
-    print("⚠️ No checkpoint found! Evaluating the BASE model.")
+    print("⚠️ No checkpoint found! Loading the BASE model.")
     model = VisionEncoderDecoderModel.from_pretrained(MODEL_NAME)
-    processor = TrOCRProcessor.from_pretrained(MODEL_NAME)
 
+# 3. Standard model config setup
 model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
 model.config.pad_token_id = processor.tokenizer.pad_token_id
 model.config.eos_token_id = processor.tokenizer.sep_token_id
-
 model.to(DEVICE)
+
 
 
 # -----------------------------

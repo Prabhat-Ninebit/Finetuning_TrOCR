@@ -12,13 +12,13 @@ from transformers import (
     AutoTokenizer,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
-    default_data_collator
+    default_data_collator,
+    TrainerCallback
 )
 
 # -----------------------------
 # 1. SETTINGS & PATHS
 # -----------------------------
-# Use the Hindi-specialized model as our foundation
 MODEL_ID = "sabaridsnfuji/Hindi_Offline_Handwritten_OCR"
 DATASET_DIR = "/home/azureuser/hindi_ocr/dataset"
 IMAGE_DIR   = "/home/azureuser/hindi_ocr/dataset/HindiSeg"
@@ -27,7 +27,7 @@ OUTPUT_DIR  = "/mnt/blob/hindicheckpoint"
 MAX_LENGTH = 64
 BATCH_SIZE = 8
 EPOCHS = 10
-LEARNING_RATE = 2e-5  # Low learning rate for fine-tuning
+LEARNING_RATE = 2e-5 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # -----------------------------
@@ -43,68 +43,76 @@ val_ds = prepare_dataset("val.csv")
 # -----------------------------
 # 3. COMPONENT INITIALIZATION
 # -----------------------------
-# FIX for OSError: Manual assembly because 'sabaridsnfuji' repo lacks image config
 img_processor = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 processor = TrOCRProcessor(image_processor=img_processor, tokenizer=tokenizer)
 model = VisionEncoderDecoderModel.from_pretrained(MODEL_ID)
 
-# FORCE these into the config object explicitly
-model.config.decoder_start_token_id = processor.tokenizer.bos_token_id or processor.tokenizer.cls_token_id
-model.config.pad_token_id = processor.tokenizer.pad_token_id
-model.config.eos_token_id = processor.tokenizer.sep_token_id
+# Define IDs
+START_TOKEN = tokenizer.bos_token_id or tokenizer.cls_token_id
+PAD_TOKEN = tokenizer.pad_token_id
+EOS_TOKEN = tokenizer.sep_token_id
 
-# IMPORTANT: Also sync the generation_config
-model.generation_config.decoder_start_token_id = model.config.decoder_start_token_id
-model.generation_config.pad_token_id = model.config.pad_token_id
+# Initial Config Setup
+model.config.decoder_start_token_id = START_TOKEN
+model.config.pad_token_id = PAD_TOKEN
+model.config.eos_token_id = EOS_TOKEN
+model.generation_config.decoder_start_token_id = START_TOKEN
+model.generation_config.pad_token_id = PAD_TOKEN
 
-# Fix for the DeprecationWarning you saw in the logs:
+# -----------------------------
+# 4. CALLBACK & PREPROCESS
+# -----------------------------
+# FIX: This forces the config back into the model if a checkpoint overwrites it
+class FixConfigCallback(TrainerCallback):
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        if model is not None:
+            model.config.decoder_start_token_id = START_TOKEN
+            model.config.pad_token_id = PAD_TOKEN
+            model.generation_config.decoder_start_token_id = START_TOKEN
+            print(f"✅ Config Forced: decoder_start_token_id set to {START_TOKEN}")
+
 def preprocess(batch):
+    # Fix: Load images properly for set_transform
     images = [Image.open(os.path.join(IMAGE_DIR, name)).convert("RGB") for name in batch["file_name"]]
-    # Use the processor to get tensors directly instead of manual np.array
+    
+    # Fix: Ensure tensors are created without Numpy 2.0 copy warnings
     inputs = processor(images, return_tensors="pt") 
     
-    labels = processor.tokenizer(
+    labels = tokenizer(
         batch["text"], 
         padding="max_length", 
         max_length=MAX_LENGTH, 
         truncation=True
     ).input_ids
     
-    labels = [[(l if l != processor.tokenizer.pad_token_id else -100) for l in label] for label in labels]
+    # Replace padding with -100
+    labels = [[(l if l != PAD_TOKEN else -100) for l in label] for label in labels]
     
-    # Return as torch tensors directly to avoid the Numpy 2.0 copy error
     return {
         "pixel_values": inputs.pixel_values, 
-        "labels": torch.tensor(labels)
+        "labels": torch.as_tensor(labels)
     }
-# Use set_transform instead of map. This takes 0 seconds.
+
 train_ds.set_transform(preprocess)
 val_ds.set_transform(preprocess)
 
 # -----------------------------
-# 5. EVALUATION METRIC (CER)
+# 5. METRICS & TRAINING ARGS
 # -----------------------------
 cer_metric = evaluate.load("cer")
 
 def compute_metrics(pred):
     labels_ids = pred.label_ids
     pred_ids = pred.predictions
-
-    # Decode predictions and labels
     pred_str = processor.batch_decode(pred_ids, skip_special_tokens=True)
-    labels_ids[labels_ids == -100] = processor.tokenizer.pad_token_id
+    labels_ids[labels_ids == -100] = PAD_TOKEN
     label_str = processor.batch_decode(labels_ids, skip_special_tokens=True)
+    return {"cer": cer_metric.compute(predictions=pred_str, references=label_str)}
 
-    cer = cer_metric.compute(predictions=pred_str, references=label_str)
-    return {"cer": cer}
-
-# -----------------------------
-# 6. TRAINING CONFIGURATION
-# -----------------------------
 training_args = Seq2SeqTrainingArguments(
     output_dir=OUTPUT_DIR,
-    predict_with_generate=True,       # Essential to get actual text for CER
+    predict_with_generate=True,
     eval_strategy="steps",
     save_strategy="steps",
     eval_steps=500,
@@ -115,19 +123,19 @@ training_args = Seq2SeqTrainingArguments(
     remove_unused_columns=False,
     per_device_train_batch_size=BATCH_SIZE,
     per_device_eval_batch_size=BATCH_SIZE,
-    fp16=True,                        # Use mixed precision for faster training
+    fp16=True,
     warmup_steps=500,
     save_total_limit=2,
     load_best_model_at_end=True,
     metric_for_best_model="cer",
     greater_is_better=False,
-    eval_accumulation_steps=1,        # Keeps VRAM low during evaluation
-    dataloader_num_workers=2,
+    eval_accumulation_steps=1,
+    dataloader_num_workers=0, # Changed to 0 to avoid multiprocessing issues with set_transform
     report_to="none"
 )
 
 # -----------------------------
-# 7. EXECUTION
+# 6. EXECUTION
 # -----------------------------
 trainer = Seq2SeqTrainer(
     model=model,
@@ -136,15 +144,18 @@ trainer = Seq2SeqTrainer(
     eval_dataset=val_ds,
     data_collator=default_data_collator,
     compute_metrics=compute_metrics,
+    callbacks=[FixConfigCallback()] # <--- Added the Fix
 )
 
-print("🚀 Pipeline ready. Starting training...")
-trainer.train()
+# Check for existing checkpoint
+from transformers.trainer_utils import get_last_checkpoint
+last_checkpoint = get_last_checkpoint(OUTPUT_DIR) if os.path.isdir(OUTPUT_DIR) else None
 
-# -----------------------------
-# 8. FINAL SAVE
-# -----------------------------
+print(f"🚀 Starting training. Resume from: {last_checkpoint}")
+trainer.train(resume_from_checkpoint=last_checkpoint)
+
+# Final Save
 final_path = os.path.join(OUTPUT_DIR, "final_hindi_model")
 trainer.save_model(final_path)
 processor.save_pretrained(final_path)
-print(f"✅ Training finished. Model saved at {final_path}")
+print(f"✅ Saved to {final_path}")

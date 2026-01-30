@@ -192,6 +192,25 @@ trainer = Seq2SeqTrainer(
     compute_metrics=compute_metrics,
     data_collator=data_collator,
 )
+print("🔍 Running manual generation test...")
+# Pick 3 samples from your validation dataset
+sample_batch = [val_ds[i] for i in range(3)]
+# Process them through your custom collator to get pixel_values
+inputs = data_collator(sample_batch)
+pixel_values = inputs["pixel_values"].to(DEVICE)
+
+# Manually trigger generation with specific parameters
+generated_ids = model.generate(
+    pixel_values, 
+    max_length=MAX_LABEL_LENGTH,
+    num_beams=4,
+    decoder_start_token_id=model.config.decoder_start_token_id
+)
+
+# Decode and print
+manual_preds = processor.batch_decode(generated_ids, skip_special_tokens=True)
+print(f"DEBUG PREDICTIONS: {manual_preds}")
+# -----------------------------
 
 print("📊 Evaluation started...")
 

@@ -25,15 +25,15 @@ print("Using device:", DEVICE)
 # -----------------------------
 # CONFIG
 # -----------------------------
-MODEL_NAME = "sabaridsnfuji/Hindi_Offline_Handwritten_OCR"
+MODEL_NAME = "microsoft/trocr-base-handwritten"
 
 DATASET_DIR = "/home/azureuser/hindi_ocr/dataset"
 IMAGE_DIR   = "/home/azureuser/hindi_ocr/dataset/HindiSeg"   # IMPORTANT (see CSV paths)
-OUTPUT_DIR  = "/mnt/blob/hindicheckpoint"
+OUTPUT_DIR  = "/mnt/blob/checkpoints"
 
-MAX_LABEL_LENGTH = 32
+MAX_LABEL_LENGTH = 64
 BATCH_SIZE = 16
-EPOCHS = 10
+EPOCHS = 20
 LEARNING_RATE = 2e-5
 
 
@@ -45,6 +45,7 @@ def load_csv(csv_path):
         csv_path,
         header=0,                       # EXPLICIT: first row is header
         usecols=["file_name", "text"],  # enforce schema
+        encoding='utf-8'                # Ensure proper Hindi encoding
     )
     return Dataset.from_pandas(df, preserve_index=False)
 
@@ -53,24 +54,31 @@ train_ds = load_csv(os.path.join(DATASET_DIR, "train.csv"))
 val_ds   = load_csv(os.path.join(DATASET_DIR, "val.csv"))
 
 
-# -----------------------------
-# MODEL & PROCESSOR
-# -----------------------------
+
 processor = TrOCRProcessor.from_pretrained(MODEL_NAME)
-model = VisionEncoderDecoderModel.from_pretrained(MODEL_NAME)
 
+# 2. Determine where to load the model weights from
+if os.path.isdir(OUTPUT_DIR) and get_last_checkpoint(OUTPUT_DIR):
+    checkpoint_path = get_last_checkpoint(OUTPUT_DIR)
+    print(f"✅ Loading fine-tuned weights from: {checkpoint_path}")
+    # Load weights from the checkpoint
+    model = VisionEncoderDecoderModel.from_pretrained(checkpoint_path)
+else:
+    print("⚠️ No checkpoint found! Loading the BASE model.")
+    model = VisionEncoderDecoderModel.from_pretrained(MODEL_NAME)
 
-# 2. Update architectural config (Standard)
-model.config.decoder_start_token_id = processor.tokenizer.bos_token_id or processor.tokenizer.cls_token_id
+# 3. Standard model config setup
+model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
 model.config.pad_token_id = processor.tokenizer.pad_token_id
 model.config.eos_token_id = processor.tokenizer.sep_token_id
 
-# 3. Update Generation Config (The Fix for the ValueError)
-# This is where max_length, num_beams, etc., now belongs
-model.generation_config.max_length = 64
-model.generation_config.decoder_start_token_id = model.config.decoder_start_token_id
-model.generation_config.pad_token_id = processor.tokenizer.pad_token_id
-model.generation_config.eos_token_id = processor.tokenizer.sep_token_id
+# Add generation config for proper inference
+from transformers import GenerationConfig
+model.generation_config = GenerationConfig(
+    decoder_start_token_id=processor.tokenizer.cls_token_id,
+    pad_token_id=processor.tokenizer.pad_token_id,
+    eos_token_id=processor.tokenizer.sep_token_id,
+)
 
 model.to(DEVICE)
 
@@ -141,9 +149,9 @@ data_collator = TrOCRDataCollator(processor, IMAGE_DIR)
 
 
 # -----------------------------
-# METRIC (CER)
+# METRIC (WER for Hindi)
 # -----------------------------
-cer_metric = evaluate.load("cer")
+wer_metric = evaluate.load("wer")
 
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
@@ -177,12 +185,13 @@ def compute_metrics(eval_pred):
         skip_special_tokens=True
     )
 
-    cer = cer_metric.compute(
+    wer = wer_metric.compute(
         predictions=pred_str,
         references=label_str
     )
 
-    return {"cer": cer}
+    return {"wer": wer}
+
 
 
 # -----------------------------
@@ -190,29 +199,36 @@ def compute_metrics(eval_pred):
 # -----------------------------
 training_args = Seq2SeqTrainingArguments(
     output_dir=OUTPUT_DIR,
+
     eval_strategy="steps",
     save_strategy="steps",
     save_steps=1000,
-    eval_steps=500,
+    eval_steps=1000,
     save_total_limit=2,
     per_device_train_batch_size=BATCH_SIZE,
-    per_device_eval_batch_size=4,      # Increased from 1 for speed
-    eval_accumulation_steps=2,
+    per_device_eval_batch_size=1,
+    eval_accumulation_steps=1,
+
     learning_rate=LEARNING_RATE,
     num_train_epochs=EPOCHS,
+
     fp16=True,
     logging_steps=100,
-    predict_with_generate=True,       # <--- MUST BE TRUE
-    generation_max_length=64,         # <--- ADD THIS
-    metric_for_best_model="cer",
+
+    predict_with_generate=True,  # Enable for evaluation metrics
+
+    metric_for_best_model="wer",
     greater_is_better=False,
     load_best_model_at_end=True,
+
+    max_grad_norm=1.0,  # Prevent gradient explosion
+
     dataloader_num_workers=0,
     remove_unused_columns=False,
+
     report_to="none",
     seed=42,
 )
-
 
 
 # -----------------------------
@@ -222,7 +238,7 @@ trainer = Seq2SeqTrainer(
     model=model,
     args=training_args,
     train_dataset=train_ds,
-    eval_dataset=val_ds, 
+    eval_dataset=val_ds,  # evaluation disabled
     data_collator=data_collator,
     compute_metrics=compute_metrics,
 )
